@@ -30,12 +30,12 @@ public class Startup extends BroadcastReceiver {
 
     @Override
     public void onReceive(final Context context, final Intent bootintent) { 
+        Constants.CONTEXT = context.getApplicationContext();
         boolean enabled = false;
         SharedPreferences sharedPrefs = PreferenceManager.getDefaultSharedPreferences(context);
         if (OTGModeSwitch.isSupported()) {
             context.startService(new Intent(context.getApplicationContext(), OTGModeSwitch.class));
         }
-        Constants.CONTEXT = context.getApplicationContext();
     }
 
     private void restore(String file, boolean enabled) {
