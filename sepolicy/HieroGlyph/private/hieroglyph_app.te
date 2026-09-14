@@ -1,0 +1,6 @@
+type hieroglyph_app, domain, coredomain;
+extra_system_uid_app_domain(hieroglyph_app)
+
+binder_call(hieroglyph_app, hal_matrix_leds)
+binder_call(hal_matrix_leds, hieroglyph_app)
+allow hieroglyph_app hal_matrix_leds_service:service_manager find;

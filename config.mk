@@ -22,3 +22,7 @@ ifneq ($(filter DeviceExtras ,$(PRODUCT_PACKAGES)),)
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += $(HW_NOTHING_PATH)/sepolicy/DeviceExtras/private
 SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS += $(HW_NOTHING_PATH)/sepolicy/DeviceExtras/public
 endif
+
+ifneq ($(filter HieroGlyph$(PRODUCT_DEVICE) ,$(PRODUCT_PACKAGES)),)
+SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += $(HW_NOTHING_PATH)/sepolicy/HieroGlyph/private
+endif
