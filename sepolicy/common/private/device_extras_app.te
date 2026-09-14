@@ -16,6 +16,7 @@ allow $1 {
   netstats_service
   sensitive_content_protection_service
   sensorservice_service
+  thermal_service
   surfaceflinger_service
   uimode_service
   voiceinteraction_service
