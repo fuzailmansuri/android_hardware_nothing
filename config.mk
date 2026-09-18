@@ -11,6 +11,7 @@ BOARD_VENDOR_SEPOLICY_DIRS += $(HW_NOTHING_PATH)/sepolicy/qcom/vendor
 endif
 
 ifneq ($(filter vendor.lineage.health-service.default ,$(PRODUCT_PACKAGES)),)
+$(call soong_config_set,lineage_health,charging_control_charging_path,/proc/charger/usb_charger_en)
 BOARD_VENDOR_SEPOLICY_DIRS += $(HW_NOTHING_PATH)/sepolicy/lineage/health
 endif
 
