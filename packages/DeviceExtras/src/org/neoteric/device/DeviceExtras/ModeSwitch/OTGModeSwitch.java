@@ -37,7 +37,7 @@ import org.neoteric.device.DeviceExtras.FileUtils;
 
 public class OTGModeSwitch extends Service implements OnPreferenceChangeListener {
 
-    final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(Constants.CONTEXT);
+    private SharedPreferences prefs;
     private boolean receiverRegistered = false;
     private static volatile boolean deviceCharging = false;
 
@@ -127,6 +127,8 @@ public class OTGModeSwitch extends Service implements OnPreferenceChangeListener
 
     @Override
     public void onCreate() {
+        Constants.CONTEXT = this.getApplicationContext();
+        prefs = PreferenceManager.getDefaultSharedPreferences(Constants.CONTEXT);
         setReceiver(true);
     }
 
