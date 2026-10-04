@@ -161,22 +161,44 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     return ndk::ScopedAStatus::ok();
 }
 
-ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es __unused,
+ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
                                      const std::shared_ptr<IVibratorCallback>& callback,
                                      int32_t* _aidl_return) {
     uint32_t id;
+    int32_t strength;
+
+    switch (es) {
+        case EffectStrength::LIGHT:
+            strength = 40;
+            break;
+        case EffectStrength::MEDIUM:
+            strength = 75;
+            break;
+        case EffectStrength::STRONG:
+            strength = 100;
+            break;
+        default:
+            strength = RICHTAP_JND_STRENGTH;
+            break;
+    }
 
     switch (effect) {
         case Effect::CLICK:
         case Effect::DOUBLE_CLICK:
-        case Effect::TICK:
-        case Effect::THUD:
-        case Effect::POP:
-        case Effect::HEAVY_CLICK:
             id = RICHTAP_JND_EFFECT_CLICK;
             break;
+        case Effect::TICK:
         case Effect::TEXTURE_TICK:
             id = RICHTAP_JND_EFFECT_TICK;
+            break;
+        case Effect::THUD:
+        case Effect::HEAVY_CLICK:
+            id = RICHTAP_JND_EFFECT_CLICK;
+            strength = 100;
+            break;
+        case Effect::POP:
+            id = RICHTAP_JND_EFFECT_CLICK;
+            strength = (strength * 85) / 100;
             break;
         default:
             return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
@@ -185,7 +207,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es __unused,
     updateF0();
     aac_vibra_setAmplitude(0xff);
 
-    int32_t ret = aac_vibra_looper_prebaked_effect(id, RICHTAP_JND_STRENGTH);
+    int32_t ret = aac_vibra_looper_prebaked_effect(id, strength);
     if (ret < 0) {
         ALOGE("AAC perform failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
@@ -194,7 +216,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es __unused,
     if (effect == Effect::DOUBLE_CLICK) {
         std::thread([=] {
             usleep(DOUBLE_CLICK_GAP_MS * 1000);
-            aac_vibra_looper_prebaked_effect(RICHTAP_JND_EFFECT_CLICK, RICHTAP_JND_STRENGTH);
+            aac_vibra_looper_prebaked_effect(RICHTAP_JND_EFFECT_CLICK, strength);
         }).detach();
         ret = DOUBLE_CLICK_DURATION_MS;
     }
