@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#define LOG_TAG "vibrator-rt_ics"
+
 #include "Vibrator.h"
 
 #include <cutils/properties.h>
@@ -127,6 +129,8 @@ ndk::ScopedAStatus Vibrator::off() {
 
 ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
                                 const std::shared_ptr<IVibratorCallback>& callback) {
+    ++gComposeGen;
+
     int32_t ret = aac_vibra_looper_on(timeoutMs);
     if (ret < 0) {
         ALOGE("AAC on failed: %d\n", ret);
@@ -186,6 +190,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
             return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
     }
 
+    uint32_t gen = ++gComposeGen;
     aac_vibra_setAmplitude(0xff);
 
     int32_t ret = aac_vibra_looper_prebaked_effect(id, strength);
@@ -197,6 +202,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
     if (effect == Effect::DOUBLE_CLICK) {
         std::thread([=] {
             usleep(DOUBLE_CLICK_GAP_MS * 1000);
+            if (gComposeGen.load() != gen) return;
             aac_vibra_looper_prebaked_effect(RICHTAP_JND_EFFECT_CLICK, strength);
         }).detach();
         ret = DOUBLE_CLICK_DURATION_MS;
