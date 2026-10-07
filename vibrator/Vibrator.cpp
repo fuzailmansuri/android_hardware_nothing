@@ -28,11 +28,6 @@
 #define SFDC_F0_MIN 50.0f
 #define SFDC_F0_MAX 500.0f
 
-#define HE_V1_VERSION 1
-#define HE_V1_TYPE_TRANSIENT 0x1001
-#define HE_V1_INTENSITY 100
-#define HE_V1_FREQUENCY 65
-
 #define COMPOSE_DELAY_MAX_MS 1000
 #define COMPOSE_SIZE_MAX 16
 #define COMPOSE_SCALE_GAMMA 1.2f
@@ -47,8 +42,15 @@ namespace vibrator {
 
 static std::atomic<uint32_t> gComposeGen{0};
 
+static void applyF0(float f0) {
+    if (f0 >= SFDC_F0_MIN && f0 <= SFDC_F0_MAX) {
+        aac_vibra_setting_f0(0, f0);
+    }
+}
+
 static void sfdcF0Callback(float f0) {
     ALOGD("sfdc f0 update: %.1f", f0);
+    applyF0(f0);
 }
 
 static bool primitiveToEffect(CompositePrimitive p, uint32_t* id, int32_t* durationMs) {
@@ -76,22 +78,6 @@ static uint8_t scaleToAmplitude(float scale) {
     return amplitude;
 }
 
-static void updateF0() {
-    static const int32_t he[5] = {HE_V1_VERSION, HE_V1_TYPE_TRANSIENT, 0, HE_V1_INTENSITY,
-                                  HE_V1_FREQUENCY};
-    float f0;
-
-    if (sfdc_calibrate(he, 5) >= 0) {
-        f0 = sfdc_get_transient_fc();
-    } else {
-        f0 = sfdc_get_continuous_f0();
-    }
-
-    if (f0 >= SFDC_F0_MIN && f0 <= SFDC_F0_MAX) {
-        aac_vibra_setting_f0(0, f0);
-    }
-}
-
 Vibrator::Vibrator() {
     uint32_t deviceType = 0;
 
@@ -114,10 +100,8 @@ Vibrator::Vibrator() {
         ALOGW("sfdc init failed, running without f0 tracking\n");
     } else {
         float f0 = sfdc_get_manufactory_f0();
-        if (f0 >= SFDC_F0_MIN && f0 <= SFDC_F0_MAX) {
-            aac_vibra_setting_f0(0, f0);
-            ALOGI("seeded manufactory f0: %.1f\n", f0);
-        }
+        applyF0(f0);
+        ALOGI("seeded manufactory f0: %.1f\n", f0);
     }
 
     ALOGI("AAC init success: %u\n", deviceType);
@@ -143,8 +127,6 @@ ndk::ScopedAStatus Vibrator::off() {
 
 ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
                                 const std::shared_ptr<IVibratorCallback>& callback) {
-    updateF0();
-
     int32_t ret = aac_vibra_looper_on(timeoutMs);
     if (ret < 0) {
         ALOGE("AAC on failed: %d\n", ret);
@@ -204,7 +186,6 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
             return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
     }
 
-    updateF0();
     aac_vibra_setAmplitude(0xff);
 
     int32_t ret = aac_vibra_looper_prebaked_effect(id, strength);
@@ -314,7 +295,6 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
 
     uint32_t gen = ++gComposeGen;
     std::thread([=] {
-        updateF0();
         for (const auto& e : composite) {
             uint32_t id;
             int32_t ms;
