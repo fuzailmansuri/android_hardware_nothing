@@ -17,6 +17,7 @@ cc_binary {
     ],
     srcs: [
         "service.cpp",
+        "HapticPrimitives.cpp",
         "Vibrator.cpp",
     ],
     shared_libs: [
@@ -26,7 +27,6 @@ cc_binary {
         "libbase",
         "libbinder_ndk",
         "libaacvibrator",
-        "libics_haptic",
         "android.hardware.vibrator-V2-ndk",
     ],
 }

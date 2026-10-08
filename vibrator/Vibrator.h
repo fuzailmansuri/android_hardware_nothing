@@ -3,12 +3,46 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#pragma once
+
 #include <aidl/android/hardware/vibrator/BnVibrator.h>
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+#include "HePattern.h"
 
 namespace aidl {
 namespace android {
 namespace hardware {
 namespace vibrator {
+
+/**
+ * Delivers IVibratorCallback::onComplete when a vibration ends, from one worker thread.
+ *
+ * Only one vibration plays at a time, so arming a new callback, or stopping, completes
+ * the previous one immediately.
+ */
+class CompletionNotifier {
+  public:
+    CompletionNotifier();
+    ~CompletionNotifier();
+
+    void schedule(const std::shared_ptr<IVibratorCallback>& callback, int32_t durationMs);
+    void completeNow();
+
+  private:
+    void loop();
+
+    std::mutex mLock;
+    std::condition_variable mCv;
+    std::shared_ptr<IVibratorCallback> mCallback;
+    std::chrono::steady_clock::time_point mDeadline;
+    bool mExit = false;
+    std::thread mThread;
+};
 
 class Vibrator : public BnVibrator {
   public:
@@ -24,8 +58,8 @@ class Vibrator : public BnVibrator {
     ndk::ScopedAStatus getSupportedEffects(std::vector<Effect>* _aidl_return) override;
     ndk::ScopedAStatus setAmplitude(float amplitude) override;
     ndk::ScopedAStatus setExternalControl(bool enabled) override;
-    ndk::ScopedAStatus getCompositionDelayMax(int32_t* maxDelayMs);
-    ndk::ScopedAStatus getCompositionSizeMax(int32_t* maxSize);
+    ndk::ScopedAStatus getCompositionDelayMax(int32_t* maxDelayMs) override;
+    ndk::ScopedAStatus getCompositionSizeMax(int32_t* maxSize) override;
     ndk::ScopedAStatus getSupportedPrimitives(std::vector<CompositePrimitive>* supported) override;
     ndk::ScopedAStatus getPrimitiveDuration(CompositePrimitive primitive,
                                             int32_t* durationMs) override;
@@ -44,6 +78,13 @@ class Vibrator : public BnVibrator {
     ndk::ScopedAStatus getSupportedBraking(std::vector<Braking>* supported) override;
     ndk::ScopedAStatus composePwle(const std::vector<PrimitivePwle>& composite,
                                    const std::shared_ptr<IVibratorCallback>& callback) override;
+
+  private:
+    ndk::ScopedAStatus play(const HePattern& pattern, int32_t durationMs,
+                            const std::shared_ptr<IVibratorCallback>& callback,
+                            int32_t* playedMs);
+
+    CompletionNotifier mNotifier;
 };
 
 }  // namespace vibrator
