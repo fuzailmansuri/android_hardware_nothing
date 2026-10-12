@@ -66,13 +66,19 @@ public class OTGModeSwitch extends Service implements OnPreferenceChangeListener
     private final BroadcastReceiver chargingReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            // Battery status broadcasts are frequent and can be delivered
+            // independently of a cable transition. Only disable host OTG
+            // when the system reports that external power was connected.
+            if (Intent.ACTION_POWER_CONNECTED.equals(intent.getAction())) {
+                disableOTGIfEnabled();
+            }
+
             int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
             switch (status) {
                 case BatteryManager.BATTERY_STATUS_CHARGING:
                 case BatteryManager.BATTERY_STATUS_FULL:
                 case BatteryManager.BATTERY_STATUS_NOT_CHARGING:
                     deviceCharging = true;
-                    setOTGMode(false);
                     prefs.edit().putBoolean(DeviceExtras.KEY_OTG_SWITCH, false).apply();
                     break;
                 case BatteryManager.BATTERY_STATUS_DISCHARGING:
@@ -95,8 +101,18 @@ public class OTGModeSwitch extends Service implements OnPreferenceChangeListener
         return (isSupported() && !deviceCharging);
     }
 
-    private static void setOTGMode(boolean newState) {
+    static void setOTGMode(boolean newState) {
         FileUtils.writeProcNode(FILE, newState ? "3" : "4");
+    }
+
+    private static void disableOTGIfEnabled() {
+        // Reapplying OTG-off while USB is connected can disturb the Type-C
+        // and data connection. Only disable when the controller confirms
+        // OTG is enabled; if the read fails, leave the state alone.
+        String currentState = FileUtils.readLine(FILE);
+        if ("3".equals(currentState)) {
+            setOTGMode(false);
+        }
     }
     
     private void setReceiver(boolean enable) {
