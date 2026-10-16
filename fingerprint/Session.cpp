@@ -263,8 +263,6 @@ ndk::ScopedAStatus Session::close() {
 
 #ifdef TARGET_USES_LHBM 
     setFOD(FOD_FINISHED);
-#else
-    ::android::base::WriteStringToFile("0", "/sys/panel_feature/ui_status");
 #endif
 
     mClosed = true;

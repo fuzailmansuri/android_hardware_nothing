@@ -4,11 +4,8 @@
         <version>4</version>
         <fqname>IFingerprint/default</fqname>
     </hal>
-    <hal format="aidl">
-        <name>vendor.goodix.hardware.biometrics.fingerprint</name>
-        <interface>
-            <name>IGoodixFingerprintDaemon</name>
-            <instance>default</instance>
-        </interface>
-    </hal>
+    <!-- IGoodixFingerprintDaemon/default is provided by
+         vendor.nothing.hardware.biometrics.fingerprint-service; declaring it
+         here as well conflicts at VINTF assembly. This service consumes it
+         via ServiceManager lookup, which needs no fragment entry. -->
 </manifest>
