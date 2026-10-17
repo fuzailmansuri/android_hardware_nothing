@@ -26,6 +26,15 @@ class PickupSensor(
 
     private val sensorManager = context.getSystemService(SensorManager::class.java)!!
     private val sensor = Utils.getSensor(sensorManager, sensorType)
+    private val proximitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+    @Volatile
+    private var proximityCovered = false
+    private val proximityListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            proximityCovered = event.values[0] <= 0f
+        }
+        override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+    }
 
     private val executorService = Executors.newSingleThreadExecutor()
     private var entryTimestamp = 0L
@@ -39,13 +48,15 @@ class PickupSensor(
         entryTimestamp = SystemClock.elapsedRealtime()
         if (event.values[0] == sensorValue) {
             if (Utils.isPickUpSetToWake(context)) {
-                wakeLock.acquire(WAKELOCK_TIMEOUT_MS)
-                powerManager.wakeUpWithProximityCheck(
-                    SystemClock.uptimeMillis(),
-                    PowerManager.WAKE_REASON_GESTURE,
-                    TAG,
-                    Display.DEFAULT_DISPLAY,
-                )
+                if (!proximityCovered) {
+                    wakeLock.acquire(WAKELOCK_TIMEOUT_MS)
+                    powerManager.wakeUp(
+                        SystemClock.uptimeMillis(),
+                        PowerManager.WAKE_REASON_GESTURE,
+                        TAG,
+                        Display.DEFAULT_DISPLAY,
+                    )
+                }
             } else {
                 Utils.launchDozePulse(context)
             }
@@ -60,6 +71,9 @@ class PickupSensor(
             executorService.submit {
                 entryTimestamp = SystemClock.elapsedRealtime()
                 sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+                proximitySensor?.let {
+                    sensorManager.registerListener(proximityListener, it, SensorManager.SENSOR_DELAY_NORMAL)
+                }
             }
         }
     }
@@ -67,7 +81,12 @@ class PickupSensor(
     fun disable() {
         if (sensor != null) {
             Log.d(TAG, "Disabling")
-            executorService.submit { sensorManager.unregisterListener(this, sensor) }
+            executorService.submit {
+                sensorManager.unregisterListener(this, sensor)
+                proximitySensor?.let {
+                    sensorManager.unregisterListener(proximityListener, it)
+                }
+            }
         }
     }
 
