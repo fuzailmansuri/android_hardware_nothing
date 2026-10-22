@@ -40,6 +40,9 @@
 #define PRIMITIVE_CLICK_MS 18
 #define PRIMITIVE_TICK_MS 12
 
+// Continuous on() windows shorter than this are played as a plain transient.
+#define ON_TRANSIENT_MAX_MS 100
+
 namespace aidl {
 namespace android {
 namespace hardware {
@@ -85,6 +88,21 @@ static void updateF0() {
         f0 = sfdc_get_transient_fc();
     } else {
         f0 = sfdc_get_continuous_f0();
+    }
+
+    if (f0 >= SFDC_F0_MIN && f0 <= SFDC_F0_MAX) {
+        aac_vibra_setting_f0(0, f0);
+    }
+}
+
+// Continuous line mode has no transient calibration of its own; driving it at
+// the transient-tuned frequency puts the LRA off resonance and makes its
+// output weak. Re-seed the plain continuous f0 before every continuous play.
+static void updateContinuousF0() {
+    float f0 = sfdc_get_continuous_f0();
+
+    if (f0 < SFDC_F0_MIN || f0 > SFDC_F0_MAX) {
+        f0 = sfdc_get_manufactory_f0();
     }
 
     if (f0 >= SFDC_F0_MIN && f0 <= SFDC_F0_MAX) {
@@ -143,9 +161,32 @@ ndk::ScopedAStatus Vibrator::off() {
 
 ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
                                 const std::shared_ptr<IVibratorCallback>& callback) {
-    updateF0();
+    if (timeoutMs <= 0) {
+        return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
+    }
 
-    int32_t ret = aac_vibra_looper_on(timeoutMs);
+    updateContinuousF0();
+
+    int32_t ret;
+
+    if (timeoutMs <= ON_TRANSIENT_MAX_MS) {
+        // Short window: a transient alone is far crisper than a stub of
+        // continuous drive. This is what every pulse of ring and notification
+        // waveforms reduces to.
+        ret = aac_vibra_looper_prebaked_effect(RICHTAP_JND_EFFECT_CLICK, RICHTAP_JND_STRENGTH);
+    } else {
+        // Longer window: start with a transient for a sharp attack, then hold
+        // with the continuous drive for the remaining time.
+        ret = aac_vibra_looper_prebaked_effect(RICHTAP_JND_EFFECT_CLICK, RICHTAP_JND_STRENGTH);
+        if (ret >= 0 && timeoutMs > ret) {
+            int32_t holdMs = aac_vibra_looper_on(timeoutMs - ret);
+            if (holdMs < 0) {
+                return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
+            }
+            ret += holdMs;
+        }
+    }
+
     if (ret < 0) {
         ALOGE("AAC on failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
