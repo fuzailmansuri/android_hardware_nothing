@@ -5,468 +5,332 @@
 
 package com.nothing.assistkey
 
+import android.app.ActivityManager
 import android.app.KeyguardManager
 import android.app.NotificationManager
+import android.app.SearchManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.hardware.input.InputManager
 import android.media.AudioManager
+import android.os.Bundle
 import android.os.Handler
-import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.UserHandle
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.os.VibratorManager
 import android.provider.MediaStore
 import android.provider.Settings
+import android.service.quickaccesswallet.QuickAccessWalletClient
+import android.telecom.TelecomManager
 import android.util.Log
+import android.view.InputDevice
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.widget.Toast
-import java.util.concurrent.Executors
+import com.android.internal.util.ScreenshotHelper
+import com.android.internal.widget.LockPatternUtils
 
-class ActionExecutor(private val context: Context) {
-    private val audioManager = context.getSystemService(AudioManager::class.java)
-    private val cameraManager = context.getSystemService(CameraManager::class.java)
-    private val keyguardManager = context.getSystemService(KeyguardManager::class.java)
-    private val notificationManager = context.getSystemService(NotificationManager::class.java)
-    private val powerManager = context.getSystemService(PowerManager::class.java)
-    private val vibrator: Vibrator? = context.getSystemService(VibratorManager::class.java)?.defaultVibrator
-        ?: context.getSystemService(Vibrator::class.java)
+/** Runs assist key actions. Every method is called on the KeyHandler thread. */
+class ActionExecutor(
+    private val context: Context,
+    private val handler: Handler,
+    private val settings: KeySettings,
+) {
+    private val activityManager by lazy { context.getSystemService(ActivityManager::class.java)!! }
+    private val audioManager by lazy { context.getSystemService(AudioManager::class.java)!! }
+    private val cameraManager by lazy { context.getSystemService(CameraManager::class.java)!! }
+    private val inputManager by lazy { context.getSystemService(InputManager::class.java)!! }
+    private val keyguardManager by lazy { context.getSystemService(KeyguardManager::class.java)!! }
+    private val notificationManager by lazy { context.getSystemService(NotificationManager::class.java)!! }
+    private val powerManager by lazy { context.getSystemService(PowerManager::class.java)!! }
+    private val vibrator by lazy { context.getSystemService(Vibrator::class.java)!! }
+    private val screenshotHelper by lazy { ScreenshotHelper(context) }
 
-    private val packageContext: Context = try {
-        val pkgCtx = context.createPackageContext("com.nothing.assistkey", Context.CONTEXT_IGNORE_SECURITY)
-        if (pkgCtx.isDeviceProtectedStorage) pkgCtx else pkgCtx.createDeviceProtectedStorageContext()
-    } catch (_: Exception) {
-        if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
-    }
+    private var torchCameraId: String? = null
+    private var torchOn = false
+    private var torchCallbackRegistered = false
 
-    private val executorService = Executors.newSingleThreadExecutor()
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private var cameraPackages = emptySet<String>()
+    private var cameraPackagesTime = 0L
+    private var shutterDownTime = 0L
 
-    private var rearCameraId: String? = null
-    private var isTorchOn = false
-
-    private val torchCallback = object : CameraManager.TorchCallback() {
-        override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
-            if (rearCameraId == null) {
-                getOrFindRearCameraId()
-            }
-            if (cameraId == rearCameraId) {
-                isTorchOn = enabled
-            }
-        }
-
-        override fun onTorchModeUnavailable(cameraId: String) {
-            if (rearCameraId == null) {
-                getOrFindRearCameraId()
-            }
-            if (cameraId == rearCameraId) {
-                isTorchOn = false
-            }
-        }
-    }
-
-    private var isTorchCallbackRegistered = false
-
-    private fun ensureTorchCallback() {
-        if (isTorchCallbackRegistered) return
+    /** Called on every key down so torch state is known before the first toggle. */
+    fun prepare() {
+        if (torchCallbackRegistered) return
         try {
-            cameraManager?.let { manager ->
-                getOrFindRearCameraId()
-                manager.registerTorchCallback(torchCallback, mainHandler)
-                isTorchCallbackRegistered = true
-            }
-        } catch (e: Exception) {
-            Log.w(Constants.TAG, "Failed to register torch callback, will retry", e)
-        }
-    }
-
-    init {
-        ensureTorchCallback()
-    }
-
-    private fun getOrFindRearCameraId(): String? {
-        if (rearCameraId != null) return rearCameraId
-        try {
-            cameraManager?.let { manager ->
-                rearCameraId = manager.cameraIdList.firstOrNull { id ->
-                    val characteristics = manager.getCameraCharacteristics(id)
-                    val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
-                    val hasFlash = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-                    facing == CameraCharacteristics.LENS_FACING_BACK && hasFlash
-                } ?: manager.cameraIdList.firstOrNull { id ->
-                    manager.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            cameraManager.registerTorchCallback(object : CameraManager.TorchCallback() {
+                override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
+                    if (cameraId == torchCameraId) torchOn = enabled
                 }
-            }
-        } catch (e: Exception) {
-            Log.e(Constants.TAG, "Failed to find rear camera ID", e)
-        }
-        return rearCameraId
-    }
 
-    fun vibrate(effectId: Int = VibrationEffect.EFFECT_CLICK) {
-        val hapticEnabled = try {
-            Settings.System.getInt(context.contentResolver, Constants.PREF_HAPTIC_FEEDBACK) == 1
-        } catch (_: Settings.SettingNotFoundException) {
-            val all = packageContext.getSharedPreferences(
-                Constants.SHARED_PREFERENCES_NAME,
-                Context.MODE_PRIVATE
-            ).all
-            when (val v = all[Constants.PREF_HAPTIC_FEEDBACK]) {
-                is Boolean -> v
-                is Int -> v == 1
-                is String -> v == "true" || v == "1"
-                else -> true
-            }
-        } catch (_: Exception) {
-            true
-        }
-        if (!hapticEnabled) return
-
-        try {
-            vibrator?.let {
-                val effect = VibrationEffect.createPredefined(effectId)
-                val attrs = VibrationAttributes.createForUsage(VibrationAttributes.USAGE_HARDWARE_FEEDBACK)
-                it.vibrate(effect, attrs)
-            }
+                override fun onTorchModeUnavailable(cameraId: String) {
+                    if (cameraId == torchCameraId) torchOn = false
+                }
+            }, handler)
+            torchCameraId = findTorchCamera()
+            torchCallbackRegistered = true
         } catch (e: Exception) {
-            try {
-                vibrator?.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE))
-            } catch (_: Exception) {}
+            Log.w(Constants.TAG, "Torch callback not registered yet", e)
         }
     }
 
-    fun execute(
-        action: Int,
-        customAppPackage: String? = null,
-        hapticEffect: Int = VibrationEffect.EFFECT_CLICK
-    ) {
+    fun run(action: Int, app: String?, effect: Int) {
         if (action == Constants.ACTION_NONE) return
-
-        Log.d(Constants.TAG, "ActionExecutor.execute: action=$action, customAppPackage=$customAppPackage")
-        vibrate(hapticEffect)
-
-        executorService.submit {
-            try {
-                when (action) {
-                    Constants.ACTION_VOICE_ASSISTANT -> launchVoiceAssistant()
-                    Constants.ACTION_TORCH -> toggleTorch()
-                    Constants.ACTION_CAMERA -> launchCamera()
-                    Constants.ACTION_SCREENSHOT -> takeScreenshot()
-                    Constants.ACTION_RINGER_MODE -> cycleRingerMode()
-                    Constants.ACTION_DND -> toggleDoNotDisturb()
-                    Constants.ACTION_VOICE_RECORDER -> launchVoiceRecorder()
-                    Constants.ACTION_MEDIA_PLAY_PAUSE -> sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
-                    Constants.ACTION_MEDIA_NEXT -> sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
-                    Constants.ACTION_MEDIA_PREV -> sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
-                    Constants.ACTION_LAUNCH_APP -> launchCustomApp(customAppPackage)
-                    Constants.ACTION_AUTO_ROTATE -> toggleAutoRotate()
-                    Constants.ACTION_MUTE_MIC -> toggleMicMute()
-                    Constants.ACTION_LOCKDOWN -> triggerLockdown()
-                    Constants.ACTION_WALLET -> launchWallet()
-                    Constants.ACTION_CAMERA_SHUTTER -> triggerCameraShutter()
-                    else -> Log.w(Constants.TAG, "Unknown action: $action")
+        Log.d(Constants.TAG, "Running action $action")
+        haptic(effect)
+        try {
+            when (action) {
+                Constants.ACTION_VOICE_ASSISTANT -> launchAssistant()
+                Constants.ACTION_TORCH -> toggleTorch()
+                Constants.ACTION_CAMERA -> launchCamera()
+                Constants.ACTION_SCREENSHOT ->
+                    screenshotHelper.takeScreenshot(SCREENSHOT_KEY_OTHER, handler, null)
+                Constants.ACTION_RINGER_MODE -> cycleRingerMode()
+                Constants.ACTION_DND -> toggleDnd()
+                Constants.ACTION_VOICE_RECORDER -> launchRecorder()
+                Constants.ACTION_MEDIA_PLAY_PAUSE -> mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+                Constants.ACTION_MEDIA_NEXT -> mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
+                Constants.ACTION_MEDIA_PREV -> mediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+                Constants.ACTION_LAUNCH_APP -> launchApp(app)
+                Constants.ACTION_AUTO_ROTATE -> toggleAutoRotate()
+                Constants.ACTION_MUTE_MIC -> toggleMicMute()
+                Constants.ACTION_LOCKDOWN -> lockdown()
+                Constants.ACTION_WALLET -> launchWallet()
+                Constants.ACTION_CAMERA_SHUTTER -> {
+                    injectCameraKey(KeyEvent.ACTION_DOWN)
+                    injectCameraKey(KeyEvent.ACTION_UP)
                 }
-            } catch (e: Exception) {
-                Log.e(Constants.TAG, "Error executing action $action", e)
+                else -> Log.w(Constants.TAG, "Unknown action $action")
             }
+        } catch (e: Exception) {
+            Log.e(Constants.TAG, "Action $action failed", e)
         }
     }
 
-    private fun wakeUpIfNeeded() {
-        powerManager?.let { pm ->
-            if (!pm.isInteractive) {
-                val wakeLock = pm.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                    "${Constants.TAG}:WakeLock"
-                )
-                wakeLock.acquire(Constants.WAKELOCK_DURATION_MS)
-                pm.wakeUp(SystemClock.uptimeMillis(), PowerManager.WAKE_REASON_GESTURE, "AssistKey:Wake")
-            }
+    fun haptic(effect: Int) {
+        if (!settings.current.haptics) return
+        vibrator.vibrate(
+            VibrationEffect.createPredefined(effect),
+            VibrationAttributes.createForUsage(VibrationAttributes.USAGE_HARDWARE_FEEDBACK)
+        )
+    }
+
+    fun isRinging(): Boolean = try {
+        context.getSystemService(TelecomManager::class.java)?.isRinging == true
+    } catch (e: Exception) {
+        false
+    }
+
+    fun silenceRinger() {
+        haptic(VibrationEffect.EFFECT_TICK)
+        try {
+            context.getSystemService(TelecomManager::class.java)?.silenceRinger()
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "Failed to silence ringer", e)
         }
     }
 
-    private fun launchVoiceAssistant() {
-        wakeUpIfNeeded()
-        val intent = Intent(Intent.ACTION_VOICE_ASSIST).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    /** True when the focused task belongs to an app that handles camera capture intents. */
+    fun isCameraInForeground(): Boolean = try {
+        val top = activityManager.getRunningTasks(1).firstOrNull()?.topActivity?.packageName
+        top != null && top in cameraPackages()
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun cameraPackages(): Set<String> {
+        val now = SystemClock.elapsedRealtime()
+        if (cameraPackagesTime == 0L || now - cameraPackagesTime > CAMERA_PACKAGES_TTL_MS) {
+            cameraPackages = listOf(
+                MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA,
+                MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA_SECURE,
+                MediaStore.ACTION_IMAGE_CAPTURE,
+                MediaStore.ACTION_VIDEO_CAPTURE,
+            ).flatMap { action ->
+                context.packageManager.queryIntentActivities(
+                    Intent(action), PackageManager.ResolveInfoFlags.of(0L)
+                ).map { it.activityInfo.packageName }
+            }.toSet()
+            cameraPackagesTime = now
         }
-        if (context.packageManager.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(0L)) == null) {
-            intent.action = Intent.ACTION_VOICE_COMMAND
+        return cameraPackages
+    }
+
+    fun injectCameraKey(action: Int) {
+        val now = SystemClock.uptimeMillis()
+        if (action == KeyEvent.ACTION_DOWN) shutterDownTime = now
+        val event = KeyEvent(
+            shutterDownTime, now, action, KeyEvent.KEYCODE_CAMERA, 0, 0,
+            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD
+        )
+        inputManager.injectInputEvent(event, InputManager.INJECT_INPUT_EVENT_MODE_ASYNC)
+    }
+
+    private fun wake() {
+        if (!powerManager.isInteractive) {
+            powerManager.wakeUp(
+                SystemClock.uptimeMillis(), PowerManager.WAKE_REASON_GESTURE, Constants.TAG
+            )
         }
-        startActivitySafely(intent)
+    }
+
+    private fun start(intent: Intent): Boolean {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        return try {
+            context.startActivityAsUser(intent, UserHandle.CURRENT)
+            true
+        } catch (e: ActivityNotFoundException) {
+            Log.w(Constants.TAG, "No activity for $intent")
+            false
+        }
+    }
+
+    private fun resolves(intent: Intent) =
+        context.packageManager.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(0L)) != null
+
+    private fun launchAssistant() {
+        wake()
+        // Same path as the framework assist gesture: the default assistant's session UI,
+        // shown over the keyguard when allowed
+        val searchManager = context.getSystemService(SearchManager::class.java)
+        if (searchManager != null) {
+            searchManager.launchAssist(Bundle())
+        } else {
+            start(Intent(Intent.ACTION_VOICE_COMMAND))
+        }
+    }
+
+    private fun findTorchCamera(): String? {
+        val ids = cameraManager.cameraIdList
+        fun hasFlash(id: String) = cameraManager.getCameraCharacteristics(id)
+            .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        fun isBack(id: String) = cameraManager.getCameraCharacteristics(id)
+            .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+        return ids.firstOrNull { isBack(it) && hasFlash(it) } ?: ids.firstOrNull { hasFlash(it) }
     }
 
     private fun toggleTorch() {
-        ensureTorchCallback()
-        val camId = getOrFindRearCameraId() ?: return
-        try {
-            val newState = !isTorchOn
-            cameraManager?.setTorchMode(camId, newState)
-            isTorchOn = newState
-        } catch (e: Exception) {
-            Log.e(Constants.TAG, "Failed to toggle torch", e)
-        }
+        val id = torchCameraId ?: findTorchCamera()?.also { torchCameraId = it } ?: return
+        cameraManager.setTorchMode(id, !torchOn)
     }
 
     private fun launchCamera() {
-        wakeUpIfNeeded()
-        val isLocked = keyguardManager?.isKeyguardLocked == true
-        var intent = if (isLocked) {
-            Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA_SECURE).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-        } else {
-            Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
+        wake()
+        val secure = keyguardManager.isKeyguardLocked
+        val intent = Intent(
+            if (secure) MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA_SECURE
+            else MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA
+        )
+        if (secure && !resolves(intent)) {
+            intent.action = MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA
         }
-        if (isLocked && context.packageManager.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(0L)) == null) {
-            intent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-        }
-        startActivitySafely(intent)
-    }
-
-    private fun takeScreenshot() {
-        wakeUpIfNeeded()
-        try {
-            val helperClass = Class.forName("com.android.internal.util.ScreenshotHelper")
-            val helper = helperClass.getConstructor(Context::class.java).newInstance(context)
-            try {
-                val requestBuilderClass = Class.forName("com.android.internal.util.ScreenshotRequest\$Builder")
-                val requestBuilder = requestBuilderClass.getConstructor(
-                    Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType
-                ).newInstance(1, 1) // TAKE_SCREENSHOT_FULLSCREEN = 1, SCREENSHOT_KEY_CHORD = 1
-                val request = requestBuilderClass.getMethod("build").invoke(requestBuilder)
-                val requestClass = Class.forName("com.android.internal.util.ScreenshotRequest")
-                val method = helperClass.getMethod(
-                    "takeScreenshot",
-                    requestClass,
-                    Handler::class.java,
-                    java.util.function.Consumer::class.java
-                )
-                method.invoke(helper, request, mainHandler, null)
-            } catch (_: Exception) {
-                try {
-                    val method = helperClass.getMethod(
-                        "takeScreenshot",
-                        Int::class.javaPrimitiveType,
-                        Int::class.javaPrimitiveType,
-                        Handler::class.java,
-                        java.util.function.Consumer::class.java
-                    )
-                    method.invoke(helper, 1, 1, mainHandler, null)
-                } catch (_: Exception) {
-                    val method = helperClass.getMethod(
-                        "takeScreenshot",
-                        Int::class.javaPrimitiveType,
-                        Handler::class.java,
-                        java.util.function.Consumer::class.java
-                    )
-                    method.invoke(helper, 1, mainHandler, null)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(Constants.TAG, "Failed to take screenshot", e)
-        }
+        start(intent)
     }
 
     private fun cycleRingerMode() {
-        audioManager?.let { am ->
-            try {
-                val newMode = when (am.ringerModeInternal) {
-                    AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE
-                    AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_SILENT
-                    AudioManager.RINGER_MODE_SILENT -> AudioManager.RINGER_MODE_NORMAL
-                    else -> AudioManager.RINGER_MODE_NORMAL
-                }
-                am.ringerModeInternal = newMode
-            } catch (_: Exception) {
-                try {
-                    val newMode = when (am.ringerMode) {
-                        AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE
-                        AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_SILENT
-                        AudioManager.RINGER_MODE_SILENT -> AudioManager.RINGER_MODE_NORMAL
-                        else -> AudioManager.RINGER_MODE_NORMAL
-                    }
-                    am.ringerMode = newMode
-                } catch (e: Exception) {
-                    Log.e(Constants.TAG, "Failed to set ringer mode", e)
-                }
-            }
+        audioManager.ringerModeInternal = when (audioManager.ringerModeInternal) {
+            AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE
+            AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_SILENT
+            else -> AudioManager.RINGER_MODE_NORMAL
         }
     }
 
-    private fun toggleDoNotDisturb() {
-        notificationManager?.let { nm ->
-            val currentMode = nm.zenMode
-            val newMode = if (currentMode == Settings.Global.ZEN_MODE_OFF) {
-                Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS
-            } else {
-                Settings.Global.ZEN_MODE_OFF
-            }
-            nm.setZenMode(newMode, null, Constants.TAG)
-        }
-    }
-
-    private fun launchVoiceRecorder() {
-        wakeUpIfNeeded()
-        val pm = context.packageManager
-        val recorderPackages = listOf(
-            "org.lineageos.recorder",
-            "com.nothing.soundrecorder",
-            "com.android.soundrecorder",
-            "com.google.android.apps.recorder"
-        )
-
-        for (pkg in recorderPackages) {
-            val intent = pm.getLaunchIntentForPackage(pkg)
-            if (intent != null) {
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                startActivitySafely(intent)
-                return
-            }
-        }
-
-        val genericIntent = Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        startActivitySafely(genericIntent)
-    }
-
-    private fun sendMediaKey(keyCode: Int) {
-        audioManager?.let { am ->
-            val downTime = SystemClock.uptimeMillis()
-            am.dispatchMediaKeyEvent(KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, keyCode, 0))
-            am.dispatchMediaKeyEvent(KeyEvent(downTime, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0))
-        }
-    }
-
-    private fun goToSleep() {
-        powerManager?.let { pm ->
-            if (pm.isInteractive) {
-                pm.goToSleep(SystemClock.uptimeMillis())
-            }
-        }
-    }
-
-    private fun launchCustomApp(packageName: String?) {
-        if (packageName.isNullOrBlank()) return
-        wakeUpIfNeeded()
-        val intent = context.packageManager.getLaunchIntentForPackage(packageName)
-        if (intent != null) {
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            startActivitySafely(intent)
+    private fun toggleDnd() {
+        val mode = if (notificationManager.zenMode == Settings.Global.ZEN_MODE_OFF) {
+            Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS
         } else {
-            Log.w(Constants.TAG, "Could not find launch intent for $packageName")
+            Settings.Global.ZEN_MODE_OFF
         }
+        notificationManager.setZenMode(mode, null, Constants.TAG)
+    }
+
+    private fun launchRecorder() {
+        wake()
+        val pm = context.packageManager
+        val intent = RECORDER_PACKAGES.firstNotNullOfOrNull { pm.getLaunchIntentForPackage(it) }
+            ?: Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION)
+        start(intent)
+    }
+
+    private fun mediaKey(keyCode: Int) {
+        val now = SystemClock.uptimeMillis()
+        audioManager.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+        audioManager.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+    }
+
+    private fun launchApp(packageName: String?) {
+        if (packageName.isNullOrBlank()) return
+        val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+        if (intent == null) {
+            Log.w(Constants.TAG, "No launch intent for $packageName")
+            return
+        }
+        wake()
+        start(intent)
     }
 
     private fun toggleAutoRotate() {
-        val resolver = context.contentResolver
-        val current = Settings.System.getInt(resolver, Settings.System.ACCELEROMETER_ROTATION, 0)
-        Settings.System.putInt(resolver, Settings.System.ACCELEROMETER_ROTATION, if (current == 0) 1 else 0)
+        val cr = context.contentResolver
+        val key = Settings.System.ACCELEROMETER_ROTATION
+        val enabled = Settings.System.getIntForUser(cr, key, 0, UserHandle.USER_CURRENT) != 0
+        Settings.System.putIntForUser(cr, key, if (enabled) 0 else 1, UserHandle.USER_CURRENT)
     }
+
     private fun toggleMicMute() {
-        audioManager?.let { am ->
-            val isMuted = !am.isMicrophoneMute
-            am.isMicrophoneMute = isMuted
-            mainHandler.post {
-                try {
-                    val resId = if (isMuted) R.string.mic_muted else R.string.mic_unmuted
-                    val text = packageContext.getString(resId)
-                    Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
-                    Log.w(Constants.TAG, "Failed to show mic mute toast", e)
-                }
-            }
+        val muted = !audioManager.isMicrophoneMute
+        audioManager.isMicrophoneMute = muted
+        try {
+            val res = context.createPackageContext(PACKAGE, 0)
+            val text = res.getString(if (muted) R.string.mic_muted else R.string.mic_unmuted)
+            Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.w(Constants.TAG, "Failed to show mic toast", e)
         }
     }
 
-    private fun triggerLockdown() {
-        try {
-            val lockPatternUtilsClass = Class.forName("com.android.internal.widget.LockPatternUtils")
-            val constructor = lockPatternUtilsClass.getConstructor(Context::class.java)
-            val lockPatternUtils = constructor.newInstance(context)
-            val requireCredentialEntryMethod = lockPatternUtilsClass.getMethod(
-                "requireCredentialEntry",
-                Int::class.javaPrimitiveType
-            )
-            // UserHandle.USER_ALL = -1
-            requireCredentialEntryMethod.invoke(lockPatternUtils, -1)
-        } catch (e: Exception) {
-            Log.e(Constants.TAG, "Failed to invoke requireCredentialEntry", e)
-        }
-        goToSleep()
+    private fun lockdown() {
+        LockPatternUtils(context).requireStrongAuth(
+            LockPatternUtils.StrongAuthTracker.STRONG_AUTH_REQUIRED_AFTER_USER_LOCKDOWN,
+            UserHandle.USER_ALL
+        )
+        powerManager.goToSleep(SystemClock.uptimeMillis())
     }
 
     private fun launchWallet() {
-        wakeUpIfNeeded()
-        val walletIntents = listOf(
-            Intent("android.intent.action.VIEW_WALLET"),
-            Intent("org.chromium.arc.intent.action.VIEW_WALLET"),
-            context.packageManager.getLaunchIntentForPackage("com.google.android.apps.walletnfcrel"),
-            context.packageManager.getLaunchIntentForPackage("com.google.android.apps.nbu.paisa.user")
+        val intent = QuickAccessWalletClient.create(context).createWalletIntent()
+            ?: WALLET_PACKAGES.firstNotNullOfOrNull {
+                context.packageManager.getLaunchIntentForPackage(it)
+            }
+            ?: return
+        wake()
+        start(intent)
+    }
+
+    companion object {
+        private const val PACKAGE = "com.nothing.assistkey"
+
+        // WindowManager.ScreenshotSource.SCREENSHOT_KEY_OTHER
+        private const val SCREENSHOT_KEY_OTHER = 2
+
+        private const val CAMERA_PACKAGES_TTL_MS = 60_000L
+
+        private val RECORDER_PACKAGES = listOf(
+            "com.nothing.soundrecorder",
+            "org.lineageos.recorder",
+            "com.google.android.apps.recorder",
+            "com.android.soundrecorder",
         )
-        for (intent in walletIntents) {
-            if (intent != null) {
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                if (context.packageManager.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(0L)) != null) {
-                    startActivitySafely(intent)
-                    return
-                }
-            }
-        }
-    }
 
-    private var cachedInputManager: android.hardware.input.InputManager? = null
-    private var cachedInjectMethod: java.lang.reflect.Method? = null
-
-    fun triggerCameraShutter() {
-        sendCameraKeyEvent(KeyEvent.ACTION_DOWN, 0)
-        sendCameraKeyEvent(KeyEvent.ACTION_UP, 0)
-    }
-
-    fun sendCameraKeyEvent(action: Int, repeatCount: Int = 0) {
-        try {
-            if (cachedInputManager == null || cachedInjectMethod == null) {
-                val inputManager = context.getSystemService(android.hardware.input.InputManager::class.java)
-                val method = inputManager?.javaClass?.getMethod(
-                    "injectInputEvent",
-                    android.view.InputEvent::class.java,
-                    Int::class.javaPrimitiveType
-                )
-                cachedInputManager = inputManager
-                cachedInjectMethod = method
-            }
-            val now = SystemClock.uptimeMillis()
-            val event = KeyEvent(now, now, action, KeyEvent.KEYCODE_CAMERA, repeatCount)
-            cachedInjectMethod?.invoke(cachedInputManager, event, 0)
-        } catch (e: Exception) {
-            Log.e(Constants.TAG, "Failed to inject camera key event", e)
-        }
-    }
-
-    private fun startActivitySafely(intent: Intent) {
-        try {
-            context.startActivityAsUser(intent, UserHandle.CURRENT)
-        } catch (e: ActivityNotFoundException) {
-            Log.w(Constants.TAG, "Activity not found for intent: $intent")
-        } catch (_: Exception) {
-            try {
-                context.startActivity(intent)
-            } catch (e: Exception) {
-                Log.e(Constants.TAG, "Failed to start activity", e)
-            }
-        }
+        private val WALLET_PACKAGES = listOf(
+            "com.google.android.apps.walletnfcrel",
+            "com.google.android.apps.nbu.paisa.user",
+        )
     }
 }
