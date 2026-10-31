@@ -1,0 +1,9 @@
+{
+  "repository": "ThankYouMario/proprietary_vendor_nothing_phone2",
+  "revision": "f1fa4810eaee35fa9213e95e1ccf92d17af75839",
+  "files": {
+    "proprietary/vendor/etc/dirac/dirac_resource.dar": "9d9f4274a3aac167de2ca9526f761c90261f263624d01d664eb348dc69f2e034",
+    "proprietary/vendor/lib64/libdirac.so": "100051278a320fa5afb26cb83073f2b0192ad79fc181a3702b0229e131a34e8b",
+    "proprietary/vendor/lib64/soundfx/libdiraceffect_NT.so": "bdff94c7537878a2c952e380f01a42f8bf0a1a5aeec72b9b873a15e04930a917"
+  }
+}

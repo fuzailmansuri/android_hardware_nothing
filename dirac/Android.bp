@@ -1,0 +1,58 @@
+// Dirac prebuilts from Nothing Phone2; see provenance.json.
+
+soong_namespace {
+}
+
+cc_prebuilt_library_shared {
+    name: "libdirac",
+    owner: "nothing",
+    strip: {
+        none: true,
+    },
+    target: {
+        android_arm64: {
+            srcs: [
+                "proprietary/vendor/lib64/libdirac.so",
+            ],
+            shared_libs: [
+                "liblog",
+                "libm",
+                "libc",
+            ],
+        },
+    },
+    compile_multilib: "64",
+    prefer: true,
+    soc_specific: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libdiraceffect_NT",
+    owner: "nothing",
+    strip: {
+        none: true,
+    },
+    target: {
+        android_arm64: {
+            srcs: [
+                "proprietary/vendor/lib64/soundfx/libdiraceffect_NT.so",
+            ],
+            shared_libs: [
+                "libdirac",
+                "libcutils",
+                "libutils",
+                "libbase",
+                "libaudioutils",
+                "liblog",
+                "libc++",
+                "libc",
+                "libm",
+                "libdl",
+            ],
+        },
+    },
+    compile_multilib: "64",
+    relative_install_path: "soundfx",
+    prefer: true,
+    soc_specific: true,
+}

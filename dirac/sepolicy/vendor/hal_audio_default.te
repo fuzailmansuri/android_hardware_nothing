@@ -1,0 +1,2 @@
+# The vendor effect records its state through persist.vendor.newdirac.*.
+set_prop(hal_audio_default, vendor_audio_prop)

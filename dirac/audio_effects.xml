@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Reference entries: merge into the ROM's existing audio effects XML. -->
+<audio_effects_conf version="2.0" xmlns="http://schemas.android.com/audio/audio_effects_conf/v2_0">
+    <libraries>
+        <library name="dirac" path="libdiraceffect_NT.so"/>
+    </libraries>
+    <effects>
+        <effect name="dirac" library="dirac" uuid="ae737c63-f2c0-5457-909e-1e940c91b67b"/>
+    </effects>
+</audio_effects_conf>
