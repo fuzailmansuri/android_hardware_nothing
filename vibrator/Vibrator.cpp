@@ -44,6 +44,10 @@
 
 // Continuous on() windows shorter than this are played as a plain transient.
 #define ON_TRANSIENT_MAX_MS 100
+// Only ring/notification-length windows get the attack click before the
+// hold. Mid-size windows (app close, long press) hold without an attack
+// so they feel like one clean pulse instead of a double tap.
+#define ON_ATTACK_MIN_MS 400
 // The framework sets the amplitude right after on(); wait this long for it.
 #define ON_AMPLITUDE_WAIT_MS 5
 
@@ -153,14 +157,24 @@ static void updateContinuousF0() {
 // transient click, which is far crisper than a stub of continuous drive.
 // Longer windows get the click as an attack and hold with continuous drive.
 static void playOnWindow(int32_t timeoutMs, float amplitude) {
-    int32_t ret = playTransient(RICHTAP_JND_EFFECT_CLICK, amplitude);
-    if (ret < 0) {
-        ALOGE("AAC on transient failed: %d\n", ret);
+    // Short window: a single crisp transient, nothing more.
+    if (timeoutMs <= ON_TRANSIENT_MAX_MS) {
+        playTransient(RICHTAP_JND_EFFECT_CLICK, amplitude);
         return;
     }
 
-    if (timeoutMs <= ON_TRANSIENT_MAX_MS || timeoutMs <= ret) {
-        return;
+    int32_t ret = 0;
+    // Attack click only for ring/notification-length windows; a mid-size
+    // window (app close, long press) skips it so it is one clean pulse.
+    if (timeoutMs > ON_ATTACK_MIN_MS) {
+        ret = playTransient(RICHTAP_JND_EFFECT_CLICK, amplitude);
+        if (ret < 0) {
+            ALOGE("AAC on transient failed: %d\n", ret);
+            return;
+        }
+        if (timeoutMs <= ret) {
+            return;
+        }
     }
 
     updateContinuousF0();
