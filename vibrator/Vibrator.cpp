@@ -245,6 +245,8 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
     }
 
+    timeoutMs = static_cast<int32_t>(timeoutMs * 1.10f);
+
     uint32_t gen;
     {
         std::lock_guard<std::mutex> lock(gOnLock);
