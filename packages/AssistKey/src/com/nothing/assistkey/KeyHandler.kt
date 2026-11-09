@@ -254,6 +254,10 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
         return null
     }
 
+    override fun onPocketStateChanged(inPocket: Boolean) {
+        isPocketNear = inPocket
+    }
+
     private fun isEssentialKey(event: KeyEvent): Boolean {
         return event.keyCode == Constants.KEYCODE_ESSENTIAL_KEY ||
                event.keyCode == Constants.KEYCODE_ESSENTIAL_KEY_BUTTON1 ||
