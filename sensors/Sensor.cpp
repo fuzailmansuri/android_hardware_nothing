@@ -20,6 +20,8 @@
 #include <log/log.h>
 #include <utils/SystemClock.h>
 
+#include <algorithm>
+#include <cerrno>
 #include <cmath>
 
 static bool readBool(int fd, bool seek) {
@@ -74,6 +76,9 @@ Sensor::Sensor(int32_t sensorHandle, ISensorsEventCallback* callback)
     mSensorInfo.fifoMaxEventCount = 0;
     mSensorInfo.requiredPermission = "";
     mSensorInfo.flags = 0;
+}
+
+void Sensor::start() {
     mRunThread = std::thread(startThread, this);
 }
 
@@ -86,7 +91,7 @@ Sensor::~Sensor() {
         mIsEnabled = false;
         mWaitCV.notify_all();
     }
-    mRunThread.join();
+    if (mRunThread.joinable()) mRunThread.join();
 }
 
 const SensorInfo& Sensor::getSensorInfo() const {
@@ -232,7 +237,7 @@ SysfsPollingOneShotSensor::SysfsPollingOneShotSensor(
 
     int rc;
 
-    rc = pipe(mWaitPipeFd);
+    rc = pipe2(mWaitPipeFd, O_CLOEXEC | O_NONBLOCK);
     if (rc < 0) {
         mWaitPipeFd[0] = -1;
         mWaitPipeFd[1] = -1;
@@ -240,7 +245,7 @@ SysfsPollingOneShotSensor::SysfsPollingOneShotSensor(
         return;
     }
 
-    mPollFd = open(pollPath.c_str(), O_RDONLY);
+    mPollFd = open(pollPath.c_str(), O_RDONLY | O_CLOEXEC);
     if (mPollFd < 0) {
         ALOGE("failed to open poll path %s: %d", pollPath.c_str(), mPollFd);
         return;
@@ -262,7 +267,18 @@ bool SysfsPollingOneShotSensor::opened() {
 }
 
 SysfsPollingOneShotSensor::~SysfsPollingOneShotSensor() {
+    {
+        std::lock_guard<std::mutex> lock(mRunMutex);
+        mStopThread = true;
+        mIsEnabled = false;
+        mWaitCV.notify_all();
+    }
     interruptPoll();
+    // Join while the sysfs state and derived virtual methods still exist.
+    if (mRunThread.joinable()) mRunThread.join();
+    if (mPollFd >= 0) close(mPollFd);
+    if (mWaitPipeFd[0] >= 0) close(mWaitPipeFd[0]);
+    if (mWaitPipeFd[1] >= 0) close(mWaitPipeFd[1]);
 }
 
 void SysfsPollingOneShotSensor::writeEnable(bool enable) {
@@ -322,18 +338,24 @@ void SysfsPollingOneShotSensor::run() {
             // Cannot hold lock while polling.
             runLock.unlock();
             int rc = poll(mPolls, 2, -1);
+            int pollError = errno;
             runLock.lock();
 
+            if (mStopThread) break;
             if (rc < 0) {
+                if (pollError == EINTR) continue;
                 ALOGE("failed to poll: %d", rc);
                 mStopThread = true;
                 continue;
             }
 
-            if (mPolls[1].revents == mPolls[1].events && readBool(mPollFd, true /* seek */)) {
+            if (mIsEnabled && mMode == OperationMode::NORMAL &&
+                (mPolls[1].revents & mPolls[1].events) &&
+                readBool(mPollFd, true /* seek */)) {
                 activate(false, false, false);
                 mCallback->postEvents(readEvents(), isWakeUpSensor());
-            } else if (mPolls[0].revents == mPolls[0].events) {
+            }
+            if (mPolls[0].revents & POLLIN) {
                 readBool(mWaitPipeFd[0], false /* seek */);
             }
         }

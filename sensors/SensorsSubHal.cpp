@@ -37,6 +37,13 @@ SensorsSubHal::SensorsSubHal() : mCallback(nullptr), mNextHandle(1) {
     AddSensor<UdfpsSensor>();
 }
 
+SensorsSubHal::~SensorsSubHal() {
+    for (const auto& [handle, sensor] : mSensors) {
+        sensor->activate(false);
+    }
+    mSensors.clear();
+}
+
 Return<void> SensorsSubHal::getSensorsList_2_1(ISensors::getSensorsList_2_1_cb _hidl_cb) {
     std::vector<SensorInfo> sensors;
     for (const auto& sensor : mSensors) {
@@ -139,6 +146,10 @@ Return<void> SensorsSubHal::debug(const hidl_handle& fd, const hidl_vec<hidl_str
 }
 
 Return<Result> SensorsSubHal::initialize(const sp<IHalProxyCallback>& halProxyCallback) {
+    if (halProxyCallback == nullptr) return Result::BAD_VALUE;
+    for (const auto& [handle, sensor] : mSensors) {
+        sensor->activate(false);
+    }
     mCallback = halProxyCallback;
     setOperationMode(OperationMode::NORMAL);
     return Result::OK;

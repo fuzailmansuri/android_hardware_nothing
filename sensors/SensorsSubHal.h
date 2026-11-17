@@ -39,6 +39,7 @@ using ::android::hardware::sensors::V2_1::implementation::ISensorsSubHal;
 class SensorsSubHal : public ISensorsSubHal, public ISensorsEventCallback {
   public:
     SensorsSubHal();
+    ~SensorsSubHal() override;
 
     Return<void> getSensorsList_2_1(ISensors::getSensorsList_2_1_cb _hidl_cb);
     Return<Result> injectSensorData_2_1(const Event& event);
@@ -76,6 +77,7 @@ class SensorsSubHal : public ISensorsSubHal, public ISensorsEventCallback {
         if (!sensor->opened()) {
           return;
         }
+        sensor->start();
         mSensors[sensor->getSensorInfo().sensorHandle] = sensor;
         mNextHandle++;
     }

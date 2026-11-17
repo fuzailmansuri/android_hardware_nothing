@@ -21,10 +21,12 @@
 #include <poll.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -52,6 +54,7 @@ class Sensor {
     Sensor(int32_t sensorHandle, ISensorsEventCallback* callback);
     virtual bool opened() { return true; }
     virtual ~Sensor();
+    void start();
 
     const SensorInfo& getSensorInfo() const;
     virtual void batch(int32_t samplingPeriodNs);
@@ -74,7 +77,7 @@ class Sensor {
     int64_t mLastSampleTimeNs;
     SensorInfo mSensorInfo;
 
-    std::atomic_bool mStopThread;
+    std::atomic_bool mStopThread{false};
     std::condition_variable mWaitCV;
     std::mutex mRunMutex;
     std::thread mRunThread;
@@ -122,8 +125,8 @@ class SysfsPollingOneShotSensor : public OneShotSensor {
     std::optional<std::string> mCoordinatePath;
 
     struct pollfd mPolls[2];
-    int mWaitPipeFd[2];
-    int mPollFd;
+    int mWaitPipeFd[2] = {-1, -1};
+    int mPollFd = -1;
     std::optional<std::string> mEnablePath;
     std::once_flag mEnableOpenOnce;
 
