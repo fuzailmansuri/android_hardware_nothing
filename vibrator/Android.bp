@@ -34,3 +34,19 @@ cc_binary {
         default: [],
     }),
 }
+
+cc_test {
+    name: "nothing_vibrator_test",
+    vendor: true,
+    srcs: ["Vibrator.cpp", "tests/VibratorTest.cpp"],
+    local_include_dirs: ["."],
+    shared_libs: [
+        "libcutils",
+        "libutils",
+        "liblog",
+        "libbase",
+        "libbinder_ndk",
+        "android.hardware.vibrator-V2-ndk",
+    ],
+    test_suites: ["device-tests"],
+}

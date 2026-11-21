@@ -161,9 +161,25 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     return ndk::ScopedAStatus::ok();
 }
 
-ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es __unused,
+ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
                                      const std::shared_ptr<IVibratorCallback>& callback,
                                      int32_t* _aidl_return) {
+    *_aidl_return = 0;
+    int32_t strength;
+    // Use each AAC waveform table at unity scale instead of rescaling its samples.
+    switch (es) {
+        case EffectStrength::LIGHT:
+            strength = 50;
+            break;
+        case EffectStrength::MEDIUM:
+            strength = 80;
+            break;
+        case EffectStrength::STRONG:
+            strength = RICHTAP_JND_STRENGTH;
+            break;
+        default:
+            return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
+    }
     uint32_t id;
 
     switch (effect) {
@@ -185,7 +201,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es __unused,
     updateF0();
     aac_vibra_setAmplitude(0xff);
 
-    int32_t ret = aac_vibra_looper_prebaked_effect(id, RICHTAP_JND_STRENGTH);
+    int32_t ret = aac_vibra_looper_prebaked_effect(id, strength);
     if (ret < 0) {
         ALOGE("AAC perform failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
@@ -194,7 +210,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es __unused,
     if (effect == Effect::DOUBLE_CLICK) {
         std::thread([=] {
             usleep(DOUBLE_CLICK_GAP_MS * 1000);
-            aac_vibra_looper_prebaked_effect(RICHTAP_JND_EFFECT_CLICK, RICHTAP_JND_STRENGTH);
+            aac_vibra_looper_prebaked_effect(RICHTAP_JND_EFFECT_CLICK, strength);
         }).detach();
         ret = DOUBLE_CLICK_DURATION_MS;
     }
