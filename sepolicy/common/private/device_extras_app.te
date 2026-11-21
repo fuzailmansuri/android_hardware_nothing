@@ -12,6 +12,7 @@ allow $1 {
   game_service
   gpu_service
   hint_service
+  legacy_permission_service
   media_session_service
   netstats_service
   protolog_configuration_service
